@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>pc_sense</name>
+  <version>0.1.0</version>
+  <description>
+    pointcloud _sense is a package for the detection of objects in point clouds and 
+    its visualization.
+  </description>
+
+  <author>dgz</author>
+  <maintainer email="595259789@qq.com">dgz</maintainer>
+  <license>GPLv3</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <buildtool_depend>catkin_simple</buildtool_depend>
+  <buildtool_depend>rostest</buildtool_depend>
+
+  <depend>cmake_modules</depend> 
+  <!-- <depend>cv_bridge</depend> -->
+  <!-- <depend>eigen_catkin</depend>
+  <depend>eigen_checks</depend> -->
+  <depend>roscpp</depend>
+  <depend>rosconsole</depend>
+  <depend>pcl_ros</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf</depend>
+  <depend>pcl_conversions</depend>
+  <depend>pcl_msgs</depend>
+  <depend>visualization_msgs</depend>
+</package>

@@ -1,0 +1,4 @@
+min_inlier_num: 5
+max_plane_solver_condition_number: 200
+top_k_plane: 4
+cloud_type: 1
