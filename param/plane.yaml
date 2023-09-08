@@ -2,3 +2,8 @@ min_inlier_num: 5
 max_plane_solver_condition_number: 200
 top_k_plane: 4
 cloud_type: 1
+leaf_size: 0.4
+plane_size_y: 100
+plane_size_x: 100
+invert_step: 5
+frame_id: "world"

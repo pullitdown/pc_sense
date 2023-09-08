@@ -4,11 +4,17 @@
 #include <pcl/point_types.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/project_inliers.h>
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/octree/octree.h>
 #include <Eigen/Dense>
 #include <random>
 #include <queue>
+#include <unordered_map>
 namespace pc_op
 {
+
+    /// @brief for store the plane information
+    /// @tparam PointT
     template <typename PointT>
     struct plane_pc
     {
@@ -32,7 +38,65 @@ namespace pc_op
                  const double error_) : pc(ptr_), plane_coef(plane_coef_), pc_size(pc_size_), error(error_){};
     };
 
+    template <typename PointT>
+    double point_plane_distance(const PointT &pt, const Eigen::Matrix<double, 4, 1> &plane)
+    {
+        return fabs(plane(0) * pt.x + plane(1) * pt.y + plane(2) * pt.z + plane(3));
+    }
 
+    template <typename PointT>
+    void down_sampling_pc(typename pcl::PointCloud<PointT>::Ptr &cloud, const double leaf_size)
+    {
+        typename pcl::VoxelGrid<PointT> voxel_filter;
+        voxel_filter.setInputCloud(cloud);
+        voxel_filter.setLeafSize(leaf_size, leaf_size, leaf_size);
+        voxel_filter.filter(*cloud);
+    }
+
+    /// @brief too slow ,cant run in realtime 
+    /// @tparam PointT 
+    /// @param cloud 
+    /// @param leaf_size 
+    /// @param new_points 
+    /// @param Terminating_plane 
+    template <typename PointT>
+    void generate_points_in_empty_voxels(typename pcl::PointCloud<PointT>::Ptr &cloud, double leaf_size, typename pcl::PointCloud<PointT>::Ptr &new_points,
+                                         Eigen::Vector4d Terminating_plane)
+    {
+        down_sampling_pc<PointT>(cloud, leaf_size * 2);
+        Eigen::Vector3d direction = Terminating_plane.head<3>().normalized();
+        double step = leaf_size;
+        PointT new_point;
+        for (size_t i = 0; i < cloud->points.size(); ++i)
+        {
+
+            new_point.x = cloud->points[i].x + step * direction[0];
+            new_point.y = cloud->points[i].y + step * direction[1];
+            new_point.z = cloud->points[i].z + step * direction[2];
+            if (point_plane_distance<PointT>(new_point, Terminating_plane) > point_plane_distance<PointT>(cloud->points[i], Terminating_plane)) // judge the step direction
+            {
+                step = -step;
+                new_point.x = cloud->points[i].x + step * direction[0];
+                new_point.y = cloud->points[i].y + step * direction[1];
+                new_point.z = cloud->points[i].z + step * direction[2];
+            }
+            while (point_plane_distance<PointT>(new_point, Terminating_plane) > 0.1)
+            {
+                // 在体素中心沿给定的方向生成一个新的点
+                // 这里我们假设新的点就是体素中心点的一个小偏移
+                new_point.x += step * direction[0];
+                new_point.y += step * direction[1];
+                new_point.z += step * direction[2];
+                new_points->points.push_back(new_point);
+            }
+        }
+        down_sampling_pc<PointT>(new_points, leaf_size);
+
+        new_points->header = cloud->header;
+        new_points->is_dense = false;
+        new_points->width = new_points->points.size();
+        new_points->height = 1;
+    };
 
     template <typename PointT>
     void projectCloud(const typename pcl::PointCloud<PointT>::ConstPtr &cloud,
@@ -57,12 +121,125 @@ namespace pc_op
         }
     };
 
+    template <typename PointT>
+    void getGridIdxDistance(const typename pcl::PointCloud<PointT>::ConstPtr &cloud,
+                            std::vector<double> &projected_distances,
+                            std::vector<int> &grid_idx,
+                            Eigen::Vector4d &plane_coefficients,
+                            const Eigen::Vector2d &plane_size,
+                            int invert_step = 10)
+    {
+        assert(plane_size[0] * plane_size[1] * invert_step * invert_step < INT_MAX);
+        // assert(plane_coefficients.head<3>().norm() < 1.000001 && plane_coefficients.head<3>().norm() > 0.999999);
+        
+        projected_distances.reserve(cloud->size());
+        grid_idx.reserve(cloud->size());
+        double distance, x_plane, y_plane;
+        double plane_dist_2_origin;
+        int x_len = plane_size[0] * invert_step;
+        int y_len = plane_size[1] * invert_step;
+        int hx_len = x_len / 2;
+        int hy_len = y_len / 2;
+        Eigen::Vector3d origin_in_plane(0, 0, -plane_coefficients[3]);
+        Eigen::Vector3d point_in_plane;
+        Eigen::Vector3d new_x;
+        Eigen::Vector3d new_y;
+        PointT point_f=cloud->points[0];
+
+        distance = plane_coefficients[0] * point_f.x+
+                   plane_coefficients[1] * point_f.y+
+                   plane_coefficients[2] * point_f.z+
+                   plane_coefficients[3];
+
+        point_in_plane[0] = (point_f.x - plane_coefficients[0] * distance);
+        point_in_plane[1] = (point_f.y - plane_coefficients[1] * distance);
+        point_in_plane[2] = (point_f.z - plane_coefficients[2] * distance);
+        new_x = (point_in_plane - origin_in_plane).normalized();
+        new_y = (plane_coefficients.head<3>().cross(new_x)).normalized();
+        for (auto &point : cloud->points)
+        {
+            distance = plane_coefficients[0] * point.x +
+                       plane_coefficients[1] * point.y +
+                       plane_coefficients[2] * point.z +
+                       plane_coefficients[3];
+            projected_distances.emplace_back(distance);
+            point_in_plane[0] = (point.x - plane_coefficients[0] * distance);
+            point_in_plane[1] = (point.y - plane_coefficients[1] * distance);
+            point_in_plane[2] = (point.z - plane_coefficients[2] * distance);
+            x_plane = (point_in_plane - origin_in_plane).dot(new_x);
+            y_plane = (point_in_plane - origin_in_plane).dot(new_y);
+            grid_idx.emplace_back(static_cast<int>(x_plane * invert_step) + hx_len + (static_cast<int>(y_plane * invert_step) + hy_len) * x_len);
+        }
+    };
+
+    ///@brief input the idxlist and pointcloud ,ouput all the pointcloud[idx] in idxlist
+    template <typename PointT>
+    void getPointCloudFromIdx(const typename pcl::PointCloud<PointT>::Ptr &incloud,
+                              const std::vector<int> &idxlist, typename pcl::PointCloud<PointT>::Ptr &outcloud)
+    {
+        outcloud->points.resize(idxlist.size());
+        for (int i = 0; i < idxlist.size(); i++)
+        {
+            outcloud->points[i] = incloud->points[idxlist[i]];
+        }
+    }
+
+    /// @brief get plane_idx and distance ,return the same plane_idx max distance pointcloud idx
+    template <typename PointT>
+    void getTopPoint(
+        typename pcl::PointCloud<PointT>::Ptr &cloud,
+        typename pcl::PointCloud<PointT>::Ptr &outcloud,
+        Eigen::Vector4d &plane_coefficients,
+        const Eigen::Vector2d &plane_size,
+        int invert_step = 10)
+    {
+
+        plane_coefficients/= plane_coefficients.head(3).norm();
+        std::vector<double> projected_distances;
+        std::vector<int> grid_idx;
+        std::vector<int> top_points;
+        getGridIdxDistance<PointT>(cloud,
+                                   projected_distances,
+                                   grid_idx,
+                                   plane_coefficients,
+                                   plane_size,
+                                   invert_step);
+        std::unordered_map<int, std::pair<int, double>> my_map;
+        double value;
+        int key;
+        for (int idx = 0; idx < cloud->points.size(); idx++)
+        {
+
+            value = projected_distances[idx];
+            auto it = my_map.find(grid_idx[idx]);
+            if (it != my_map.end())
+                it->second.second = std::max(it->second.second, value);
+            else
+                my_map.insert({grid_idx[idx], {idx, value}});
+        }
+
+        for (auto it = my_map.begin(); it != my_map.end(); it++)
+        {
+            top_points.push_back(it->second.first);
+        }
+
+        getPointCloudFromIdx<PointT>(cloud, top_points, outcloud);
+        outcloud->header = cloud->header;
+        outcloud->is_dense = false;
+        outcloud->width = outcloud->points.size();
+        outcloud->height = 1;
+    }
+
+    /// @brief calculate the angle between two planes
+    /// @param n1_ first plane's coefficients
+    /// @param n2_
+    /// @return the angle liks 3.1415926=pi
     double calculateAngle(const Eigen::Vector4d &n1_, const Eigen::Vector4d &n2_)
     {
 
         double cosTheta = n1_.head<3>().dot(n2_.head<3>()) / (n1_.head<3>().norm() * n2_.head<3>().norm());
-        double angle = std::acos(cosTheta); // 这个角度是弧度制
-        return angle;                       // 如果需要转换为角度制，则需要乘以(180.0 / M_PI)
+        double angle = std::acos(cosTheta);
+        return angle;
     }
 
     static inline double point_to_plane_distance(const Eigen::Vector3d &point, const Eigen::Vector4d &abcd)
@@ -114,12 +291,6 @@ namespace pc_op
         Eigen::Vector3d cp = -abcd.head(3) * abcd(3);
         return (cp.norm() > dist_thresh);
     };
-
-    template <typename PointT>
-    double point_plane_distance(const PointT &pt, const Eigen::Matrix<double, 4, 1> &plane)
-    {
-        return fabs(plane(0) * pt.x + plane(1) * pt.y + plane(2) * pt.z + plane(3));
-    }
 
     template <typename PointT>
     bool fit_plane_pc(const typename pcl::PointCloud<PointT>::Ptr &pc, Eigen::Vector4d &abcd, double cond_thresh,
@@ -264,11 +435,10 @@ namespace pc_op
                 {
                     errors(i) = point_plane_distance(point, item.plane_coef);
                 }
-                item.pc->header
-                    = cloud->header;
+                item.pc->header = cloud->header;
                 item.pc->is_dense = false;
-                item.pc->width=item.pc->points.size();
-                item.pc->height=1;
+                item.pc->width = item.pc->points.size();
+                item.pc->height = 1;
                 double inlier_std = std::sqrt((errors - errors.mean()).square().sum() / (double)(errors.size() - 1));
                 double inlier_err = errors.abs().mean();
                 item.error = inlier_err;
@@ -414,23 +584,21 @@ namespace pc_op
     void ransacDetectPlane(const typename pcl::PointCloud<PointT>::ConstPtr &cloud,
                            std::vector<Eigen::Vector4d> &planes_coef);
 
-
     template <typename PointT>
     void plane_sieve_coef(typename pcl::PointCloud<PointT>::Ptr &cloud,
-                    const Eigen::Vector4d &plane_coef,
-                    const double error_threshold=0.05
-                    )
+                          const Eigen::Vector4d &plane_coef,
+                          const double error_threshold = 0.05)
     {
 
         cloud->erase(std::remove_if(cloud->begin(), cloud->end(),
-                                    [&plane_coef,&error_threshold](PointT &a) 
-                                    { return point_plane_distance<PointT>(a,plane_coef)<error_threshold;}),
+                                    [&plane_coef, &error_threshold](PointT &a)
+                                    { return point_plane_distance<PointT>(a, plane_coef) < error_threshold; }),
                      cloud->end());
     }
 
     template <typename PointT>
     void plane_sieve_idx(typename pcl::PointCloud<PointT>::Ptr &cloud,
-                    const std::vector<int> &index_list)
+                         const std::vector<int> &index_list)
     {
         std::vector<bool>
             cloud_sieve(cloud->size(), true);
@@ -562,7 +730,7 @@ namespace pc_op
             {
                 if (std::abs(calculateAngle(item.plane_coef, planes_coef)) < 3.1415926 / 25)
                 {
-                    
+
                     index_lists.push_back(item.idx_list);
                     plane_coefs.push_back(item.plane_coef);
                 }
