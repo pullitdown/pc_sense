@@ -45,6 +45,12 @@ namespace pc_op
     }
 
     template <typename PointT>
+    double point_plane_distance_without_abs(const PointT &pt, const Eigen::Matrix<double, 4, 1> &plane)
+    {
+        return plane(0) * pt.x + plane(1) * pt.y + plane(2) * pt.z + plane(3);
+    }
+
+    template <typename PointT>
     void down_sampling_pc(typename pcl::PointCloud<PointT>::Ptr &cloud, const double leaf_size)
     {
         typename pcl::VoxelGrid<PointT> voxel_filter;
@@ -53,7 +59,7 @@ namespace pc_op
         voxel_filter.filter(*cloud);
     }
 
-    /// @brief too slow ,cant run in realtime 
+    /// @brief to generate the voxel in line between point and floor plane
     /// @tparam PointT 
     /// @param cloud 
     /// @param leaf_size 
@@ -63,34 +69,45 @@ namespace pc_op
     void generate_points_in_empty_voxels(typename pcl::PointCloud<PointT>::Ptr &cloud, double leaf_size, typename pcl::PointCloud<PointT>::Ptr &new_points,
                                          Eigen::Vector4d Terminating_plane)
     {
-        down_sampling_pc<PointT>(cloud, leaf_size * 2);
+        //down_sampling_pc<PointT>(cloud, leaf_size * 2);
         Eigen::Vector3d direction = Terminating_plane.head<3>().normalized();
         double step = leaf_size;
         PointT new_point;
+        bool flag = false;
+        double source_point_plane_distance ,new_point_plane_distance;
         for (size_t i = 0; i < cloud->points.size(); ++i)
         {
-
+            source_point_plane_distance= point_plane_distance_without_abs<PointT>(cloud->points[i], Terminating_plane);
             new_point.x = cloud->points[i].x + step * direction[0];
             new_point.y = cloud->points[i].y + step * direction[1];
             new_point.z = cloud->points[i].z + step * direction[2];
-            if (point_plane_distance<PointT>(new_point, Terminating_plane) > point_plane_distance<PointT>(cloud->points[i], Terminating_plane)) // judge the step direction
+            new_point_plane_distance=point_plane_distance_without_abs<PointT>(new_point, Terminating_plane);
+            if((new_point_plane_distance>0&&source_point_plane_distance<0)||(new_point_plane_distance<0&&source_point_plane_distance>0))
+            {
+                continue;
+            }
+
+            if (fabs(source_point_plane_distance) < fabs(new_point_plane_distance)) // judge the step direction
             {
                 step = -step;
-                new_point.x = cloud->points[i].x + step * direction[0];
-                new_point.y = cloud->points[i].y + step * direction[1];
-                new_point.z = cloud->points[i].z + step * direction[2];
             }
-            while (point_plane_distance<PointT>(new_point, Terminating_plane) > 0.1)
-            {
+
+            new_point.x = cloud->points[i].x;
+            new_point.y = cloud->points[i].y;
+            new_point.z = cloud->points[i].z;
+            
+            do{
                 // 在体素中心沿给定的方向生成一个新的点
                 // 这里我们假设新的点就是体素中心点的一个小偏移
+                new_points->points.push_back(new_point);
                 new_point.x += step * direction[0];
                 new_point.y += step * direction[1];
                 new_point.z += step * direction[2];
-                new_points->points.push_back(new_point);
+                new_point_plane_distance=point_plane_distance_without_abs<PointT>(new_point, Terminating_plane);
             }
+            while((new_point_plane_distance>0&&source_point_plane_distance>0)||(new_point_plane_distance<0&&source_point_plane_distance<0));
         }
-        down_sampling_pc<PointT>(new_points, leaf_size);
+        //down_sampling_pc<PointT>(new_points, leaf_size);
 
         new_points->header = cloud->header;
         new_points->is_dense = false;

@@ -231,14 +231,14 @@ private:
       pc_op::plane_sieve_coef<PointT>(cloud, this->floor_plane_abcd, 0.3);
 
       Eigen::Affine3d pose = Eigen::Affine3d::Identity();
-      pc_op::projectCloud<PointT>(cloud, projected_cloud, pose, this->floor_plane_abcd);
+      //pc_op::projectCloud<PointT>(cloud, projected_cloud, pose, this->floor_plane_abcd);
 
       pc_op::getTopPoint<PointT>(cloud, top_cloud, this->floor_plane_abcd, this->plane_size, this->invert_step);
       // ROS_WARN_STREAM("before downsample" << projected_cloud->points.size());
       // pc_op::down_sampling_pc<PointT>(projected_cloud, this->leaf_size);
       // ROS_WARN_STREAM("after downsample " << projected_cloud->points.size());
       // pc_op::generate_points_in_empty_voxels<PointT>(cloud, this->leaf_size, projected_cloud, this->floor_plane_abcd);
-
+      pc_op::generate_points_in_empty_voxels<PointT>(top_cloud, this->leaf_size, projected_cloud, this->floor_plane_abcd);
       pub_0.publish(pcl2ros<PointT>(cloud));
       pub_1.publish(pcl2ros<PointT>(projected_cloud));
       pub_2.publish(pcl2ros<PointT>(top_cloud));
